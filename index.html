@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>MusicGrid Studio v27 - 節奏自動細分版</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        :root { --primary: #4a90e2; --bg: #f4f7f6; --danger: #e74c3c; --success: #2ecc71; --mixer-bg: #ebedef; }
+        body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; background: var(--bg); padding: 20px; }
+        .container { max-width: 98vw; margin: auto; background: white; padding: 25px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        .btn { padding: 8px 16px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer; color: white; transition: 0.2s; }
+        .btn-play { background: var(--success); }
+        .btn-stop { background: var(--danger); }
+        .instr-label { width: 220px; background: #fff; position: sticky; left: 0; z-index: 2; box-shadow: 2px 0 5px rgba(0,0,0,0.05); }
+        .mixer-box { padding: 8px; background: var(--mixer-bg); border-radius: 8px; margin: 5px; border-left: 5px solid var(--primary); }
+        .vol-slider { width: 100%; height: 5px; cursor: pointer; accent-color: var(--primary); }
+        .grid-wrapper { width: 100%; overflow-x: auto; border: 1px solid #ddd; border-radius: 8px; }
+        table { border-collapse: collapse; table-layout: fixed; min-width: 100%; }
+        th, td { border: 1px solid #dee2e6; text-align: center; height: 55px; min-width: 100px; }
+        input[type="text"] { width: 100%; height: 100%; border: none; text-align: center; font-size: 15px; font-weight: bold; background: transparent; outline: none; }
+        .scenario-row { background: #fffdf0; }
+        .play-head { background-color: rgba(74, 144, 226, 0.2) !important; }
+        .bar-boundary { border-right: 3px solid #333 !important; }
+        .remove-btn { color: var(--danger); cursor: pointer; border: none; background: none; float: right; font-size: 18px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <div><h2 style="margin:0;">MusicGrid Studio v27 🎹</h2></div>
+        <div style="display:flex; gap:10px;">
+            <div style="background:#f8f9fa; padding:10px; border-radius:8px; border:1px solid #ddd;">
+                BPM: <input type="number" id="bpm" value="80" style="width: 50px;">
+                從 <select id="startBarSelect"></select>
+                <button id="playBtn" class="btn btn-play">▶ 播放</button>
+                <button id="stopBtn" class="btn btn-stop">■ 停止</button>
+            </div>
+            <button onclick="saveFileWithName()" class="btn" style="background:#6f42c1;">💾 儲存</button>
+            <button onclick="document.getElementById('fileInput').click()" class="btn" style="background:#17a2b8;">📂 載入</button>
+            <input type="file" id="fileInput" style="display:none" onchange="loadFile(event)">
+            <button onclick="addBarWithDataSave()" style="background:#555;" class="btn">➕ 增加小節</button>
+        </div>
+    </div>
+
+    <div style="background: #e9ecef; padding: 12px; border-radius: 10px; margin-bottom: 15px; display: flex; gap: 10px; align-items: center;">
+        <strong>➕ 加入樂器：</strong>
+        <select id="newInstrType">
+            <optgroup label="🎻 弦樂/敲擊">
+                <option value="Piano">鋼琴</option><option value="Violin">小提琴</option><option value="Cello">大提琴</option><option value="Glockenspiel">鋼片琴</option>
+            </optgroup>
+            <optgroup label="🎺 銅管/木管">
+                <option value="FrenchHorn">法國號</option><option value="Trombone">長號</option><option value="Flute">長笛</option>
+            </optgroup>
+            <optgroup label="🌍 大自然">
+                <option value="Waves">海浪</option><option value="Fire">營火</option>
+            </optgroup>
+        </select>
+        <button onclick="addNewTrackWithDataSave()" class="btn" style="background:#fd7e14;">加入音軌</button>
+    </div>
+
+    <div class="grid-wrapper">
+        <table id="musicGrid">
+            <thead><tr id="headRow"></tr></thead>
+            <tbody id="gridBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    const trackVolumes = {}; 
+    const activeInstruments = {}; 
+    const nameMap = { Scenarios: '🎨 音樂情境', Piano: '🎹 鋼琴', Flute: '🪵 長笛', Trombone: '🎺 長號', FrenchHorn: '📯 法國號', Violin: '🎻 小提琴', Cello: '🎻 大提琴', Glockenspiel: '🔔 鋼片琴', Waves: '🌊 海浪', Fire: '🔥 營火' };
+    
+    let currentBars = 4;
+    let tracks = [{ id: 'scenarios', type: 'Scenarios' }, { id: 'piano_1', type: 'Piano' }];
+    let savedGridData = {}; 
+    let isPlaying = false;
+    let activeSeq = null;
+
+    function captureCurrentData() {
+        tracks.forEach(track => {
+            const inputs = document.querySelectorAll(`input[data-trackid="${track.id}"]`);
+            savedGridData[track.id] = Array.from(inputs).map(i => i.value);
+        });
+    }
+
+    function restoreData() {
+        tracks.forEach(track => {
+            if (savedGridData[track.id]) {
+                const inputs = document.querySelectorAll(`input[data-trackid="${track.id}"]`);
+                savedGridData[track.id].forEach((val, idx) => { if (inputs[idx]) inputs[idx].value = val; });
+            }
+        });
+    }
+
+    function createInstrument(type, trackId) {
+        if (activeInstruments[trackId]) return;
+        const vol = new Tone.Volume(-12).toDestination();
+        trackVolumes[trackId] = vol;
+        let options = { oscillator: { type: "triangle" }, envelope: { release: 1, attack: 0.02 } };
+        if (['FrenchHorn', 'Trombone', 'Violin'].includes(type)) options.oscillator.type = "sawtooth";
+        if (type === 'Glockenspiel') options.oscillator.type = "sine";
+        
+        if (type === 'Waves' || type === 'Fire') {
+            const noise = new Tone.Noise(type === 'Waves' ? 'white' : 'pink').connect(vol);
+            noise.volume.value = -Infinity;
+            activeInstruments[trackId] = noise;
+        } else {
+            activeInstruments[trackId] = new Tone.PolySynth(Tone.Synth, options).connect(vol);
+        }
+    }
+
+    function renderTable() {
+        const headRow = document.getElementById('headRow');
+        const gridBody = document.getElementById('gridBody');
+        headRow.innerHTML = '<th class="instr-label">分類控制與情境</th>';
+        for (let b = 1; b <= currentBars; b++) headRow.innerHTML += `<th colspan="4" class="bar-boundary">Bar ${b}</th>`;
+
+        gridBody.innerHTML = '';
+        tracks.forEach(track => {
+            createInstrument(track.type, track.id);
+            const tr = document.createElement('tr');
+            if (track.type === 'Scenarios') tr.className = 'scenario-row';
+            const displayName = nameMap[track.type] || track.type;
+            tr.innerHTML = `<td class="instr-label"><div class="mixer-box"><b>${displayName}</b> ${track.type !== 'Scenarios' ? `<button class="remove-btn" onclick="removeTrack('${track.id}')">×</button><input type="range" class="vol-slider" min="-50" max="10" value="-12" oninput="updateVol('${track.id}', this.value)">` : ''}</div></td>`;
+            
+            if (track.type === 'Scenarios') {
+                for (let b = 0; b < currentBars; b++) {
+                    tr.innerHTML += `<td colspan="4" class="bar-boundary" data-bar="${b}"><input type="text" data-trackid="${track.id}" data-bar="${b}" placeholder="本小節意境..."></td>`;
+                }
+            } else {
+                for (let i = 0; i < currentBars * 4; i++) {
+                    tr.innerHTML += `<td class="col-${i} ${i % 4 === 3 ? 'bar-boundary' : ''}"><input type="text" data-trackid="${track.id}"></td>`;
+                }
+            }
+            gridBody.appendChild(tr);
+        });
+        updateStartBarOptions();
+    }
+
+    // --- 核心邏輯：支援多個音符平分時間 ---
+    function parseNotesWithSubdivision(inputStr, defaultOctave = "4") {
+        // 匹配音符，例如 A, G3, Bb5
+        const matches = inputStr.match(/[A-G][#b]?[0-9]?/g) || [];
+        return matches.map(n => {
+            const hasOctave = /[0-9]/.test(n);
+            return hasOctave ? n : n + defaultOctave;
+        });
+    }
+
+    function startPlayback() {
+        if (isPlaying) stopPlayback();
+        const startStep = parseInt(document.getElementById('startBarSelect').value);
+        const bpmVal = document.getElementById('bpm').value;
+        Tone.Transport.bpm.value = bpmVal;
+        const beatDuration = 60 / bpmVal; // 每一拍(4分音符)的秒數
+
+        activeSeq = new Tone.Sequence((time, col) => {
+            Tone.Draw.schedule(() => {
+                document.querySelectorAll('td').forEach(td => td.classList.remove('play-head'));
+                const barIdx = Math.floor(col / 4);
+                document.querySelectorAll(`td[data-bar="${barIdx}"]`).forEach(td => td.classList.add('play-head'));
+                document.querySelectorAll(`.col-${col}`).forEach(td => td.classList.add('play-head'));
+            }, time);
+
+            tracks.forEach(track => {
+                if (track.type === 'Scenarios') return;
+                const inputs = document.querySelectorAll(`input[data-trackid="${track.id}"]`);
+                const rawVal = (inputs[col]?.value || "").trim().toUpperCase();
+                const instr = activeInstruments[track.id];
+
+                if (track.type === 'Waves') {
+                    if (rawVal !== '') {
+                        instr.start(time);
+                        if (col % 4 === 0) {
+                            instr.volume.cancelScheduledValues(time);
+                            instr.volume.setValueAtTime(-40, time);
+                            instr.volume.linearRampToValueAtTime(0, time + beatDuration * 2);
+                            instr.volume.linearRampToValueAtTime(-40, time + beatDuration * 4);
+                        }
+                    } else { instr.volume.rampTo(-Infinity, 0.5, time); }
+                    return;
+                }
+
+                if (!rawVal || rawVal === '~') return;
+
+                const notesToPlay = parseNotesWithSubdivision(rawVal);
+                if (notesToPlay.length === 0) return;
+
+                // 計算延音 (~)
+                let holdBeats = 1;
+                for (let i = col + 1; i < currentBars * 4; i++) {
+                    if (inputs[i] && inputs[i].value.trim() === '~') holdBeats++; else break;
+                }
+
+                // 核心改進：平分時間
+                const subDuration = beatDuration / notesToPlay.length; 
+                notesToPlay.forEach((note, index) => {
+                    const startTime = time + (index * subDuration);
+                    // 最後一個音符才繼承延音(~)長度，前面的音符按細分長度播放
+                    const playDur = (index === notesToPlay.length - 1) 
+                                    ? (holdBeats - (index / notesToPlay.length)) * beatDuration 
+                                    : subDuration;
+                    
+                    try {
+                        instr.triggerAttackRelease(note, playDur * 0.9, startTime);
+                    } catch(e){}
+                });
+            });
+        }, Array.from({length: currentBars * 4}, (_, i) => i), "4n");
+
+        Tone.Transport.start();
+        activeSeq.start(0).offset = startStep; 
+        isPlaying = true;
+    }
+
+    function stopPlayback() {
+        Tone.Transport.stop();
+        if (activeSeq) { activeSeq.dispose(); activeSeq = null; }
+        document.querySelectorAll('td').forEach(td => td.classList.remove('play-head'));
+        Object.values(activeInstruments).forEach(inst => {
+            if (inst.stop) inst.stop(); 
+            if (inst.releaseAll) inst.releaseAll(); 
+            if (inst.volume) inst.volume.cancelScheduledValues(Tone.now());
+        });
+        isPlaying = false;
+    }
+
+    function updateStartBarOptions() {
+        const select = document.getElementById('startBarSelect');
+        const prev = select.value;
+        select.innerHTML = '';
+        for (let i = 1; i <= currentBars; i++) {
+            const opt = document.createElement('option');
+            opt.value = (i - 1) * 4;
+            opt.textContent = `小節 ${i}`;
+            select.appendChild(opt);
+        }
+        if (prev && prev < currentBars * 4) select.value = prev;
+    }
+    function addNewTrackWithDataSave() { captureCurrentData(); tracks.push({ id: 'tr' + Date.now(), type: document.getElementById('newInstrType').value }); renderTable(); restoreData(); }
+    function addBarWithDataSave() { captureCurrentData(); currentBars += 4; renderTable(); restoreData(); }
+    function removeTrack(id) { captureCurrentData(); tracks = tracks.filter(t => t.id !== id); renderTable(); restoreData(); }
+    function updateVol(id, val) { if (trackVolumes[id]) trackVolumes[id].volume.rampTo(val, 0.1); }
+    function saveFileWithName() { captureCurrentData(); const fileName = prompt("命名作品：", "我的旋律"); if (!fileName) return; const data = { bpm: document.getElementById('bpm').value, bars: currentBars, tracks: tracks, content: tracks.map(t => ({ id: t.id, vals: savedGridData[t.id] })) }; const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], {type: "application/json"})); a.download = `${fileName}.json`; a.click(); }
+    function loadFile(e) { const reader = new FileReader(); reader.onload = (ev) => { const data = JSON.parse(ev.target.result); currentBars = data.bars; tracks = data.tracks; document.getElementById('bpm').value = data.bpm; savedGridData = {}; data.content.forEach(c => { savedGridData[c.id] = c.vals; }); renderTable(); restoreData(); }; reader.readAsText(e.target.files[0]); }
+
+    document.getElementById('playBtn').addEventListener('click', async () => { await Tone.start(); startPlayback(); });
+    document.getElementById('stopBtn').addEventListener('click', stopPlayback);
+    renderTable();
+</script>
+</body>
+</html>
